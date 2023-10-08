@@ -374,6 +374,7 @@ set(common_SRCS
 	itemstackmetadata.cpp
 	light.cpp
 	lighting.cpp
+	liquid_system.cpp
 	log.cpp
 	main.cpp
 	map.cpp

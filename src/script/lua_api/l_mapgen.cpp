@@ -1815,7 +1815,7 @@ int ModApiMapgen::update_liquids(lua_State *L, MMVManip *vm)
 	mg.vm   = vm;
 	mg.ndef = ndef;
 
-	mg.updateLiquid(&map->m_transforming_liquid,
+	mg.updateLiquid(map->get_transforming_liquid(),
 		vm->m_area.MinEdge, vm->m_area.MaxEdge);
 	return 0;
 }

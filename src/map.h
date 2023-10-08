@@ -36,6 +36,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "util/numeric.h"
 #include "nodetimer.h"
 #include "map_settings_manager.h"
+#include "map_mechanic.h"
 #include "debug.h"
 
 class Settings;
@@ -440,10 +441,19 @@ public:
 	bool repairBlockLight(v3s16 blockpos,
 		std::map<v3s16, MapBlock *> *modified_blocks);
 
-	void transformLiquids(std::map<v3s16, MapBlock*> & modified_blocks,
-			ServerEnvironment *env);
+	inline void transformLiquids(
+			std::map<v3s16, MapBlock *> &modified_blocks, ServerEnvironment *env)
+	{
+		m_liquid_system->run(modified_blocks, env);
+	}
 
-	void transforming_liquid_add(v3s16 p);
+	inline void transforming_liquid_add(v3s16 p) {
+		m_liquid_system->push_node(p);
+	}
+
+	inline UniqueQueue<v3s16> *get_transforming_liquid() {
+		return m_liquid_system->getQueue();
+	}
 
 	MapSettingsManager settings_mgr;
 
@@ -452,7 +462,8 @@ protected:
 	void reportMetrics(u64 save_time_us, u32 saved_blocks, u32 all_blocks) override;
 
 private:
-	friend class ModApiMapgen; // for m_transforming_liquid
+
+	std::unique_ptr<MapMechanic> m_liquid_system;
 
 	// Emerge manager
 	EmergeManager *m_emerge;
@@ -466,13 +477,6 @@ private:
 
 	// used by deleteBlock() and deleteDetachedBlocks()
 	std::vector<std::unique_ptr<MapBlock>> m_detached_blocks;
-
-	// Queued transforming water nodes
-	UniqueQueue<v3s16> m_transforming_liquid;
-	f32 m_transforming_liquid_loop_count_multiplier = 1.0f;
-	u32 m_unprocessed_count = 0;
-	u64 m_inc_trending_up_start_time = 0; // milliseconds
-	bool m_queue_size_timer_started = false;
 
 	/*
 		Metadata is re-written on disk only if this is true.

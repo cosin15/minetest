@@ -41,6 +41,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "mapgen/mg_biome.h"
 #include "config.h"
 #include "server.h"
+#include "liquid_system.h"
 #include "database/database.h"
 #include "database/database-dummy.h"
 #include "database/database-sqlite3.h"
@@ -479,420 +480,6 @@ void Map::PrintInfo(std::ostream &out)
 	out<<"Map: ";
 }
 
-#define WATER_DROP_BOOST 4
-
-const static v3s16 liquid_7dirs[7] = {
-	v3s16( 0, 0, 0),
-	// order: upper before same level before lower
-	v3s16( 0, 1, 0),
-	v3s16( 0, 0, 1),
-	v3s16( 1, 0, 0),
-	v3s16( 0, 0,-1),
-	v3s16(-1, 0, 0),
-	v3s16( 0,-1, 0)
-};
-
-void ServerMap::transforming_liquid_add(v3s16 p) {
-		m_transforming_liquid.push_back(p);
-}
-
-
-class LiquidSystem {
-	public:
-	LiquidSystem(ServerMap *map) : m_map(map)
-	{
-		m_nodedef = map->getNodeDefManager();
-	}
-
-	void enterNode(const v3s16& p0, UniqueQueue<v3s16>& transforming_liquid)
-	{
-		for(u16 i = 0; i < CNT_DIRS; ++ i) p[i] = p0 + liquid_7dirs[i];
-		for(u16 i = 0; i < CNT_DIRS; ++ i) n[i] = m_map->getNode(p[i]);
-		for(u16 i = 0; i < CNT_DIRS; ++ i) n_old[i] = n[i];
-		for(u16 i = 0; i < CNT_DIRS; ++ i) d[i] = &m_nodedef->get(n[i]);
-		for(u16 i = 0; i < CNT_DIRS; ++ i) d_old[i] = d[i];
-
-		do {
-			if(handleRenewableLiquid(transforming_liquid)) break;
-			if(handleSinkingLiquid(transforming_liquid))   break;
-			if(handleRemovedLiquid(transforming_liquid))   break;
-			if(handleViscosityLiquid(transforming_liquid)) break;
-			if(handleFlowDownLiquid(transforming_liquid))  break;
-			if(handleSpreadingLiquid(transforming_liquid)) break;
-		} while(0);
-	}
-
-	void writeChangedNodes(ServerEnvironment *env,
-			std::map<v3s16, MapBlock*>& modified_blocks,
-			std::vector<std::pair<v3s16, MapNode>>& changed_nodes, IGameDef *gamedef)
-	{
-		// Find out whether there is a suspect for this action
-		auto rb = gamedef->rollback();
-		std::string suspect;
-		if(rb != nullptr) {
-			std::string suspect = rb->getSuspect(p[0], 83, 1);
-		}
-
-		for(u16 i = ALL_START; i < ALL_END; ++i) {
-
-			if(n[i] == n_old[i]) continue;
-
-			if(d[i]->isLiquid() && d_old[i]->floodable &&
-					n_old[i].getContent() != CONTENT_AIR) {
-				if (env->getScriptIface()->node_on_flood(p[i], n_old[i], n[i]))
-					continue;
-			}
-
-			if(!suspect.empty()) {
-				// Blame suspect
-				RollbackScopeActor rollback_scope(rb, suspect, true);
-				// Get old node for rollback
-				RollbackNode rollback_oldnode(m_map, p[i], gamedef);
-				// Set node
-				m_map->setNode(p[i], n[i]);
-				// Report
-				RollbackNode rollback_newnode(m_map, p[i], gamedef);
-				RollbackAction action;
-				action.setSetNode(p[i], rollback_oldnode, rollback_newnode);
-				rb->reportAction(action);
-			}
-			else {
-				m_map->setNode(p[i], n[i]);
-			}
-
-			changed_nodes.emplace_back(p[i], n[i]);
-			auto blockpos = getNodeBlockPos(p[i]);
-			auto block = m_map->getBlockNoCreateNoEx(blockpos);
-			if(block != nullptr) {
-				modified_blocks[blockpos] = block;
-			}
-
-			ContentLightingFlags f = m_nodedef->getLightingFlags(n[i]);
-			n[i].setLight(LIGHTBANK_DAY, 0, f);
-			n[i].setLight(LIGHTBANK_NIGHT, 0, f);
-
-		}
-	}
-
-
-	private:
-	enum Dir
-	{
-		ALL_START = 0,
-		C = 0, // Center
-		OTHERS_START = 1,
-		U = 1, // Up
-		SAME_START = 2,
-		B = 2, // Back
-		R = 3, // Right
-		F = 4, // Front
-		L = 5, // Left
-		SAME_END = 6,
-		D = 6, // Down
-		OTHERS_END = 7,
-		ALL_END = 7,
-		CNT_DIRS = 7,
-	};
-
-	bool isLiquid(const ContentFeatures *d)
-	{
-		return d->isLiquid() &&
-			// This is a workaround for MCL.
-			// MCL is abusing liquid for cobwebs.
-			d->liquid_alternative_source_id != d->liquid_alternative_flowing_id;
-	}
-
-	bool isLiquid(Dir i) { return isLiquid(d[i]); }
-
-	bool isLiquid(int i) { return isLiquid(d[i]); }
-
-	bool isSameLiquid(int i, int j) {
-		return isLiquid(i) && isLiquid(j) &&
-			d[i]->liquid_alternative_source_id == d[j]->liquid_alternative_source_id
-			;
-	}
-
-	bool levelInc(Dir i, int maxLevel)
-	{
-		int level = n[i].getLevel(m_nodedef);
-		if(level >= maxLevel) return false;
-
-		int increase = LIQUID_LEVEL_MAX - (int)d[i]->liquid_viscosity + 1;
-		level += increase;
-		if(level > maxLevel) level = maxLevel;
-		if(level <= 0) return false;
-
-		n[i].setLevel(m_nodedef, level);
-		return true;
-	}
-
-	bool levelInit(int i, int maxLevel)
-	{
-		int level = LIQUID_LEVEL_MAX - (int)d[i]->liquid_viscosity + 1;
-		//level = 1;
-		if(level > maxLevel) level = maxLevel;
-		if(level <= 0) return false;
-
-		n[i].setLevel(m_nodedef, level);
-		return true;
-	}
-
-	u8 getSlopeDistance(u8 liquid_level,
-			const v3s16& dir)
-	{
-		v3s16 pi = p[0];
-		for(u8 i = 0; i < liquid_level; ++i) {
-			pi += dir;
-			auto n1 = m_map->getNode(pi);
-			auto& d1 = m_map->getNodeDefManager()->get(n1);
-			if(d1.floodable || isLiquid(&d1)) {
-				auto n2 = m_map->getNode(pi + v3s16(0, -1, 0));
-				auto& d2 = m_map->getNodeDefManager()->get(n2);
-				if(d2.floodable || isLiquid(&d2)) {
-					return i;
-				}
-			}
-			else {
-				return UINT8_MAX;
-			}
-		}
-		return UINT8_MAX;
-	}
-
-	bool handleRenewableLiquid(UniqueQueue<v3s16>& transforming_liquid)
-	{
-		if(d[C]->floodable ||
-				(isLiquid(C) && d[C]->liquid_type == LIQUID_FLOWING)) {
-
-			u8 cnt[CNT_DIRS] = {0};
-
-			for(u16 i = SAME_START; i < SAME_END; ++i) {
-				// Check if the liquid fits the requirements.
-				if(d[i]->liquid_type != LIQUID_SOURCE || !d[i]->liquid_renewable ||
-						!isLiquid(i)) {
-					continue;
-				}
-
-				// Count how many times this liquid type appears.
-				for(u16 j = SAME_START; j < SAME_END; ++j) {
-					cnt[i] += (n[i].getContent() == n[j].getContent());
-				}
-
-				// If the number of sources of the same type fits the minal requirement
-				// the center node turns into that type of liquid.
-				if(cnt[i] >= 2 &&
-						(d[C]->floodable ||
-						 (d[C]->liquid_alternative_source_id == n[i].getContent()))
-						) {
-
-					transforming_liquid.push_back(p[C]);
-					n[C] = MapNode(n[i]);
-					d[C] = &m_nodedef->get(n[C]);
-					return true;
-				}
-			}
-		}
-		return false;
-	}
-
-	bool handleSinkingLiquid(UniqueQueue<v3s16>& transforming_liquid)
-	{
-		if(n[C] == n_old[C] && isLiquid(C) && !isLiquid(U) &&
-				d[C]->liquid_type == LIQUID_FLOWING) {
-			// There is no liquid of the same type on top.
-			u8 maxLevel = 0;
-
-			u8 levels[CNT_DIRS] = {0};
-			// find the biggest surrounding level.
-			for(u16 i = SAME_START; i < SAME_END; ++i) {
-				if(d[i]->liquid_alternative_flowing_id == n[C].getContent()) {
-					levels[i] = n[i].getLevel(m_nodedef);
-					if(levels[i] > maxLevel) {
-						maxLevel = levels[i];
-					}
-				}
-			}
-
-			levels[C] = n[C].getLevel(m_nodedef);
-
-			if(levels[C] >= maxLevel) {
-				// The liquid shall sink.
-				u8 new_l = maxLevel > 0? maxLevel-1 : 0;
-
-				n[C].setLevel(m_nodedef, new_l);
-				d[C] = &m_nodedef->get(n[C]);
-
-				for(u16 i = SAME_START; i < SAME_END; ++i) {
-					if(levels[i] >= maxLevel) transforming_liquid.push_back(p[i]);
-				}
-
-				if(new_l == 0) {
-					transforming_liquid.push_back(p[C]);
-				}
-				return true;
-			}
-		}
-		return false;
-	}
-
-	bool handleRemovedLiquid(UniqueQueue<v3s16>& transforming_liquid)
-	{
-		if(!isLiquid(C)) {
-			for(u16 i = SAME_START; i < ALL_END; ++i) {
-				if(isLiquid(i) && d[i]->liquid_type == LIQUID_FLOWING) {
-					transforming_liquid.push_back(p[i]);
-				}
-			}
-			return true;
-		}
-		return false;
-	}
-
-	bool handleFlowDownLiquid(UniqueQueue<v3s16>& transforming_liquid)
-	{
-		if(n[C] == n_old[C] && isLiquid(C) &&
-				d[D]->floodable) {
-
-			transforming_liquid.push_back(p[D]);
-			n[D] = MapNode(n[C]);
-			d[D] = &m_nodedef->get(n[D]); // levelInit() requires d[D]!!
-			levelInit(D, LIQUID_LEVEL_SOURCE - 1);
-			d[D] = &m_nodedef->get(n[D]);
-			return true;
-		}
-		return false;
-	}
-
-	bool handleViscosityLiquid(UniqueQueue<v3s16>& transforming_liquid)
-	{
-		int levelC = n[C].getLevel(m_nodedef);
-		if(isSameLiquid(C, U)) {
-			if(levelC < LIQUID_LEVEL_MAX) {
-				if(levelInc(C, LIQUID_LEVEL_MAX)) {
-					d[C] = &m_nodedef->get(n[C]);
-					transforming_liquid.push_back(p[C]);
-					return true;
-				}
-			}
-		}
-		else if(isLiquid(C)) {
-			int maxLevel = 0;
-			for(u16 i = SAME_START; i < SAME_END; ++i) {
-				if(!isSameLiquid(C, i)) continue;
-
-				int level = n[i].getLevel(m_nodedef);
-				if(level > maxLevel) maxLevel = level;
-			}
-			if(maxLevel - 1 > levelC) {
-				if(levelInc(C, maxLevel - 1)) {
-					d[C] = &m_nodedef->get(n[C]);
-					transforming_liquid.push_back(p[C]);
-					return true;
-				}
-			}
-		}
-		return false;
-	}
-
-	bool handleSpreadingLiquid(UniqueQueue<v3s16>& transforming_liquid)
-	{
-		if(n[C] == n_old[C] && isLiquid(C) &&
-				!d[D]->floodable && !isLiquid(D)) {
-
-			u8 l0 = n[C].getLevel(m_nodedef);
-			if(l0 <= 1 || l0 <= (LIQUID_LEVEL_SOURCE - d[C]->liquid_range)) {
-				// The liquid cannot spread further.
-				return false;
-			}
-
-			if(d[C]->liquid_slope_range > 0) {
-
-				int l = l0 + d[C]->liquid_slope_range - LIQUID_LEVEL_SOURCE;
-				u8 max_slope_dist = (u8)(l < 0? 0 : l);
-
-				u8 slope_dist[CNT_DIRS];
-
-				// Calculate all the slope distances
-				for(u16 i = SAME_START; i < SAME_END; ++i) {
-					slope_dist[i] = getSlopeDistance(max_slope_dist, liquid_7dirs[i]);
-				}
-
-				slope_dist[C] = slope_dist[U] = slope_dist[D] = UINT8_MAX;
-
-				// Find nearest slope.
-				u8 min_slope_dist = UINT8_MAX;
-				for(u16 i = SAME_START; i < SAME_END; ++i) {
-					if(slope_dist[i] < min_slope_dist) {
-						min_slope_dist = slope_dist[i];
-					}
-				}
-
-				// Put liquid in the direction where the slope distance is the
-				// shortest.
-				for(u16 i = SAME_START; i < SAME_END; ++i) {
-					if(d[i]->floodable && slope_dist[i] == min_slope_dist) {
-
-						n[i] = MapNode(n[C]);
-						d[i] = &m_nodedef->get(n[i]); // levelInit() requires d[i]!!
-						levelInit(i, (int)l0 - 1);
-						d[i] = &m_nodedef->get(n[i]);
-						transforming_liquid.push_back(p[i]);
-					}
-				}
-				return true;
-			}
-			else {
-				for(u16 i = SAME_START; i < SAME_END; ++i) {
-					if(d[i]->floodable) {
-						n[i] = MapNode(n[C]);
-						d[i] = &m_nodedef->get(n[i]); // levelInit() requires d[i]!!
-						levelInit(i, (int)l0 - 1);
-						d[i] = &m_nodedef->get(n[i]);
-						transforming_liquid.push_back(p[i]);
-					}
-				}
-				return true;
-			}
-		}
-		return false;
-	}
-
-
-	ServerMap *m_map;
-	const NodeDefManager *m_nodedef;
-
-	v3s16 p[CNT_DIRS];
-	MapNode n[CNT_DIRS];
-	MapNode n_old[CNT_DIRS];
-	const ContentFeatures *d[CNT_DIRS];
-	const ContentFeatures *d_old[CNT_DIRS];
-
-};
-
-
-void ServerMap::transformLiquids(std::map<v3s16, MapBlock*> &modified_blocks,
-		ServerEnvironment *env)
-{
-	std::vector<std::pair<v3s16, MapNode>> changed_nodes;
-
-	int cnt_nodes = m_transforming_liquid.size();
-
-	actionstream << "transformLiquids " << cnt_nodes << std::endl;
-	for (int i = 0; i < cnt_nodes && m_transforming_liquid.size() > 0; ++i) {
-
-		LiquidSystem liquidSystem(this);
-		auto p0 = m_transforming_liquid.front();
-		m_transforming_liquid.pop_front();
-
-		liquidSystem.enterNode(p0, m_transforming_liquid);
-		liquidSystem.writeChangedNodes(env, modified_blocks, changed_nodes,
-				m_gamedef);
-	}
-	env->getScriptIface()->on_liquid_transformed(changed_nodes);
-	voxalgo::update_lighting_nodes(this, changed_nodes, modified_blocks);
-}
-
-
 std::vector<v3s16> Map::findNodesWithMetadata(v3s16 p1, v3s16 p2)
 {
 	std::vector<v3s16> positions_with_meta;
@@ -1198,7 +785,8 @@ ServerMap::ServerMap(const std::string &savedir, IGameDef *gamedef,
 		EmergeManager *emerge, MetricsBackend *mb):
 	Map(gamedef),
 	settings_mgr(savedir + DIR_DELIM + "map_meta.txt"),
-	m_emerge(emerge)
+	m_liquid_system(createLiquidSystem()),
+  m_emerge(emerge)
 {
 	verbosestream<<FUNCTION_NAME<<std::endl;
 
@@ -1419,7 +1007,7 @@ void ServerMap::finishBlockMake(BlockMakeData *data,
 		Copy transforming liquid information
 	*/
 	while (data->transforming_liquid.size()) {
-		m_transforming_liquid.push_back(data->transforming_liquid.front());
+		m_liquid_system->push_node(data->transforming_liquid.front());
 		data->transforming_liquid.pop_front();
 	}
 
@@ -1584,7 +1172,7 @@ void ServerMap::addNodeAndUpdate(v3s16 p, MapNode n,
 		if(is_valid_position &&
 				(m_nodedef->get(n2).isLiquid() ||
 				n2.getContent() == CONTENT_AIR))
-			m_transforming_liquid.push_back(p2);
+      m_liquid_system->push_node(p2);
 	}
 }
 
@@ -1807,7 +1395,7 @@ void ServerMap::loadBlock(std::string *blob, v3s16 p3d, MapSector *sector, bool 
 		if (block_created_new) {
 			sector->insertBlock(std::move(block_created_new));
 			ReflowScan scanner(this, m_emerge->ndef);
-			scanner.scan(block, &m_transforming_liquid);
+			scanner.scan(block, m_liquid_system->getQueue());
 		}
 
 		/*
