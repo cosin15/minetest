@@ -1378,7 +1378,7 @@ int ModApiEnv::l_transforming_liquid_add(lua_State *L)
 	GET_ENV_PTR;
 
 	v3s16 p0 = read_v3s16(L, 1);
-	env->getServerMap().transforming_liquid_add(p0);
+	env->getServerMap().getLiquidSystem()->push_node(p0);
 	return 1;
 }
 

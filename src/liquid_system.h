@@ -19,8 +19,11 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #pragma once
 
-#include "map_mechanic.h"
+class MapMechanic;
+class IGameDef;
+class NodeDefManager;
+class Map;
 
-MapMechanic *createLiquidSystem();
+MapMechanic *createLiquidSystem(IGameDef *gamedef, const NodeDefManager *nodedef, Map *map);
 
 

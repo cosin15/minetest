@@ -19,46 +19,15 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 
 #pragma once
 
-#include <memory>
-#include <vector>
-#include <map>
+#include <functional>
+#include "nodedef.h"
 
-#include "irrlichttypes_bloated.h"
-#include "util/container.h"
-
-class IGameDef;
-class Map;
-class NodeDefManager;
-class MapBlock;
-class ServerEnvironment;
-struct MapMechanicDeps;
-
-
-class MapMechanic {
-
-	public:
-	MapMechanic(IGameDef *gamedef, const NodeDefManager *nodedef, Map *map)
-	: m_gamedef(gamedef), m_nodedef(nodedef), m_map(map)
-	{}
-
-	inline void push_node(const v3s16& node) {
-		m_queue.push_back(node);
-	}
-
-	virtual void run(std::map<v3s16, MapBlock*>& modified_blocks,
-			MapMechanicDeps& deps) = 0;
-
-	virtual ~MapMechanic() {}
-
-	inline UniqueQueue<v3s16> *getQueue() {
-		return &m_queue;
-	}
-
-	protected:
-	UniqueQueue<v3s16> m_queue;
-
-	IGameDef *m_gamedef;
-	const NodeDefManager *m_nodedef;
-	Map *m_map;
+struct MapMechanicDeps {
+	std::function<bool(v3s16 p, MapNode node, MapNode newnode)>
+	node_on_flood;
+	std::function<void(const std::vector<std::pair<v3s16, MapNode>> &list)>
+	on_liquid_transformed;
+	std::function<void(v3s16)>
+	check_for_falling;
 };
 

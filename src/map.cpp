@@ -785,7 +785,7 @@ ServerMap::ServerMap(const std::string &savedir, IGameDef *gamedef,
 		EmergeManager *emerge, MetricsBackend *mb):
 	Map(gamedef),
 	settings_mgr(savedir + DIR_DELIM + "map_meta.txt"),
-	m_liquid_system(createLiquidSystem()),
+	m_liquid_system(createLiquidSystem(gamedef, this->getNodeDefManager(), this)),
   m_emerge(emerge)
 {
 	verbosestream<<FUNCTION_NAME<<std::endl;

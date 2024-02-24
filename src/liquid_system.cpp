@@ -18,6 +18,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 */
 
 #include "map_mechanic.h"
+#include "map_mechanic_events.h"
 #include "serverenvironment.h"
 #include "map.h"
 #include "nodedef.h"
@@ -25,15 +26,16 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "rollback_interface.h"
 #include "scripting_server.h"
 #include "voxelalgorithms.h"
+#include "liquid_system.h"
 
 
 
 class LiquidSystem : public MapMechanic {
 	public:
-	LiquidSystem() : MapMechanic() {}
+	LiquidSystem(IGameDef *gamedef, const NodeDefManager *nodedef, Map *map)
+	: MapMechanic(gamedef, nodedef, map) {}
 
-	void run(std::map<v3s16, MapBlock*>& modified_blocks,
-			ServerEnvironment *env) override;
+	void run(std::map<v3s16, MapBlock*>& modified_blocks, MapMechanicDeps& deps) override;
 
 	virtual ~LiquidSystem() { }
 
@@ -44,9 +46,9 @@ class LiquidSystem : public MapMechanic {
 
 };
 
-MapMechanic *createLiquidSystem()
+MapMechanic *createLiquidSystem(IGameDef *gamedef, const NodeDefManager *nodedef, Map *map)
 {
-	return new LiquidSystem();
+	return new LiquidSystem(gamedef, nodedef, map);
 }
 
 
@@ -87,13 +89,8 @@ struct NodeNeighbor {
 
 
 void LiquidSystem::run(std::map<v3s16, MapBlock*>& modified_blocks,
-		ServerEnvironment *env)
+		MapMechanicDeps& deps)
 {
-	auto& map = env->getServerMap();
-	auto m_nodedef = map.getNodeDefManager();
-	auto m_gamedef = env->getGameDef();
-
-
 
 	u32 loopcount = 0;
 	u32 initial_size = m_queue.size();
@@ -124,7 +121,7 @@ void LiquidSystem::run(std::map<v3s16, MapBlock*>& modified_blocks,
 		v3s16 p0 = m_queue.front();
 		m_queue.pop_front();
 
-		MapNode n0 = map.getNode(p0);
+		MapNode n0 = m_map->getNode(p0);
 
 		/*
 			Collect information about current node
@@ -184,7 +181,7 @@ void LiquidSystem::run(std::map<v3s16, MapBlock*>& modified_blocks,
 					break;
 			}
 			v3s16 npos = p0 + liquid_6dirs[i];
-			NodeNeighbor nb(map.getNode(npos), nt, npos);
+			NodeNeighbor nb(m_map->getNode(npos), nt, npos);
 			const ContentFeatures &cfnb = m_nodedef->get(nb.n);
 			if (nt == NEIGHBOR_UPPER && cfnb.floats)
 				floating_node_above = true;
@@ -354,7 +351,7 @@ void LiquidSystem::run(std::map<v3s16, MapBlock*>& modified_blocks,
 
 		// on_flood() the node
 		if (floodable_node != CONTENT_AIR) {
-			if (env->getScriptIface()->node_on_flood(p0, n00, n0))
+			if (deps.node_on_flood(p0, n00, n0))
 				continue;
 		}
 
@@ -372,21 +369,21 @@ void LiquidSystem::run(std::map<v3s16, MapBlock*>& modified_blocks,
 			// Blame suspect
 			RollbackScopeActor rollback_scope(m_gamedef->rollback(), suspect, true);
 			// Get old node for rollback
-			RollbackNode rollback_oldnode(&map, p0, m_gamedef);
+			RollbackNode rollback_oldnode(m_map, p0, m_gamedef);
 			// Set node
-			map.setNode(p0, n0);
+			m_map->setNode(p0, n0);
 			// Report
-			RollbackNode rollback_newnode(&map, p0, m_gamedef);
+			RollbackNode rollback_newnode(m_map, p0, m_gamedef);
 			RollbackAction action;
 			action.setSetNode(p0, rollback_oldnode, rollback_newnode);
 			m_gamedef->rollback()->reportAction(action);
 		} else {
 			// Set node
-			map.setNode(p0, n0);
+			m_map->setNode(p0, n0);
 		}
 
 		v3s16 blockpos = getNodeBlockPos(p0);
-		MapBlock *block = map.getBlockNoCreateNoEx(blockpos);
+		MapBlock *block = m_map->getBlockNoCreateNoEx(blockpos);
 		if (block != NULL) {
 			modified_blocks[blockpos] =  block;
 			changed_nodes.emplace_back(p0, n00);
@@ -418,13 +415,13 @@ void LiquidSystem::run(std::map<v3s16, MapBlock*>& modified_blocks,
 	for (const auto &iter : must_reflow)
 		m_queue.push_back(iter);
 
-	voxalgo::update_lighting_nodes(&map, changed_nodes, modified_blocks);
+	voxalgo::update_lighting_nodes(m_map, changed_nodes, modified_blocks);
 
 	for (const v3s16 &p : check_for_falling) {
-		env->getScriptIface()->check_for_falling(p);
+		deps.check_for_falling(p);
 	}
 
-	env->getScriptIface()->on_liquid_transformed(changed_nodes);
+	deps.on_liquid_transformed(changed_nodes);
 
 	/* ----------------------------------------------------------------------
 	 * Manage the queue so that it does not grow indefinitely
@@ -475,7 +472,6 @@ void LiquidSystem::run(std::map<v3s16, MapBlock*>& modified_blocks,
 	}
 
 
-	
 }
 
 

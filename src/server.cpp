@@ -67,6 +67,7 @@ with this program; if not, write to the Free Software Foundation, Inc.,
 #include "server/serverinventorymgr.h"
 #include "translation.h"
 #include "database/database-sqlite3.h"
+#include "map_mechanic_events.h"
 #if USE_POSTGRESQL
 #include "database/database-postgresql.h"
 #endif
@@ -699,8 +700,20 @@ void Server::AsyncRunStep(bool initial_step)
 
 		ScopeProfiler sp(g_profiler, "Server: liquid transform");
 
+		ServerScripting *si = m_env->getScriptIface();
+		MapMechanicDeps deps = {
+			.node_on_flood = [si](auto p, auto node, auto newnode) -> bool {
+				return si->node_on_flood(p, node, newnode);
+			},
+			.on_liquid_transformed = [si](auto list) {
+				si->on_liquid_transformed(list);
+			},
+			.check_for_falling = [si](auto p) {
+				si->check_for_falling(p);
+			}
+		};
 		std::map<v3s16, MapBlock*> modified_blocks;
-		m_env->getServerMap().transformLiquids(modified_blocks, m_env);
+		m_env->getServerMap().getLiquidSystem()->run(modified_blocks, deps);
 
 		if (!modified_blocks.empty()) {
 			MapEditEvent event;

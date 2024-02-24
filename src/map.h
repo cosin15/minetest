@@ -441,18 +441,8 @@ public:
 	bool repairBlockLight(v3s16 blockpos,
 		std::map<v3s16, MapBlock *> *modified_blocks);
 
-	inline void transformLiquids(
-			std::map<v3s16, MapBlock *> &modified_blocks, ServerEnvironment *env)
-	{
-		m_liquid_system->run(modified_blocks, env);
-	}
-
-	inline void transforming_liquid_add(v3s16 p) {
-		m_liquid_system->push_node(p);
-	}
-
-	inline UniqueQueue<v3s16> *get_transforming_liquid() {
-		return m_liquid_system->getQueue();
+	inline MapMechanic *getLiquidSystem() {
+		return m_liquid_system;
 	}
 
 	MapSettingsManager settings_mgr;
@@ -463,7 +453,7 @@ protected:
 
 private:
 
-	std::unique_ptr<MapMechanic> m_liquid_system;
+	MapMechanic *m_liquid_system;
 
 	// Emerge manager
 	EmergeManager *m_emerge;
