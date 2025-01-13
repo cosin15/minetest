@@ -7,6 +7,7 @@
 #include "irrlichttypes.h"
 #include "debug.h" // For assert()
 #include <cstring>
+#include <cstdlib>
 #include <memory> // std::shared_ptr
 #include <string_view>
 
@@ -33,7 +34,7 @@ public:
 		m_size = 0;
 		data = nullptr;
 	}
-	Buffer(unsigned int size)
+	Buffer(u32 size)
 	{
 		m_size = size;
 		if (size != 0) {
@@ -59,7 +60,7 @@ public:
 		}
 	}
 	// Copies whole buffer
-	Buffer(const T *t, unsigned int size)
+	Buffer(const T *t, u32 size)
 	{
 		m_size = size;
 		if (size != 0) {
@@ -104,7 +105,7 @@ public:
 		}
 	}
 
-	T & operator[](unsigned int i) const
+	T & operator[](u32 i) const
 	{
 		return data[i];
 	}
@@ -113,7 +114,7 @@ public:
 		return data;
 	}
 
-	unsigned int getSize() const
+	u32 getSize() const
 	{
 		return m_size;
 	}
@@ -132,7 +133,7 @@ private:
 		delete[] data;
 	}
 	T *data;
-	unsigned int m_size;
+	u32 m_size;
 };
 
 /************************************************
@@ -149,94 +150,102 @@ public:
 	SharedBuffer()
 	{
 		m_size = 0;
-		data = NULL;
-		refcount = new unsigned int;
-		(*refcount) = 1;
+		m_mem = nullptr;
 	}
-	SharedBuffer(unsigned int size)
+
+	SharedBuffer(u32 size)
 	{
 		m_size = size;
-		if (m_size != 0) {
-			data = new T[m_size];
-		} else {
-			data = nullptr;
-		}
-
-		refcount = new unsigned int;
-		memset(data, 0, sizeof(T) * m_size);
-		(*refcount) = 1;
+		m_mem = (Mem *)calloc(1, sizeof(*m_mem) + sizeof(T) * m_size);
+		m_mem->refcount = 1;
 	}
+
 	SharedBuffer(const SharedBuffer &buffer)
 	{
 		m_size = buffer.m_size;
-		data = buffer.data;
-		refcount = buffer.refcount;
-		(*refcount)++;
+		m_mem = buffer.m_mem;
+		++m_mem->refcount;
 	}
+
 	SharedBuffer & operator=(const SharedBuffer & buffer)
 	{
 		if (this == &buffer) {
 			return *this;
 		}
-
 		drop();
 		m_size = buffer.m_size;
-		data = buffer.data;
-		refcount = buffer.refcount;
-		(*refcount)++;
+		m_mem = buffer.m_mem;
+		++m_mem->refcount;
 		return *this;
 	}
+
 	//! Copies whole buffer
-	SharedBuffer(const T *t, unsigned int size)
+	SharedBuffer(const T *t, u32 size)
 	{
-		m_size = size;
-		if (m_size != 0) {
-			data = new T[m_size];
-			memcpy(data, t, sizeof(T) * m_size);
+		if(t) {
+			m_size = size;
+			m_mem = (Mem *)malloc(sizeof(*m_mem) + sizeof(T) * m_size);
+			m_mem->refcount = 1;
+			memcpy(m_mem->data, t, sizeof(T) * m_size);
 		} else {
-			data = nullptr;
+			m_size = 0;
+			m_mem = nullptr;
 		}
-		refcount = new unsigned int;
-		(*refcount) = 1;
 	}
+
 	//! Copies whole buffer
 	SharedBuffer(const Buffer<T> &buffer) : SharedBuffer(*buffer, buffer.getSize())
 	{
 	}
+
 	~SharedBuffer()
 	{
 		drop();
 	}
-	T & operator[](unsigned int i) const
+
+	T & operator[](u32 i) const
 	{
-		assert(i < m_size);
-		return data[i];
+		assert(m_mem && i < m_size);
+		return m_mem->data[i];
 	}
+
 	T * operator*() const
 	{
-		return data;
+		assert(m_mem);
+		return m_mem->data;
 	}
-	unsigned int getSize() const
+
+	u32 getSize() const
 	{
 		return m_size;
 	}
+
 	operator Buffer<T>() const
 	{
-		return Buffer<T>(data, m_size);
+		return Buffer<T>(m_mem->data, m_size);
 	}
-private:
+
+	private:
 	void drop()
 	{
-		assert((*refcount) > 0);
-		(*refcount)--;
-		if (*refcount == 0) {
-			delete[] data;
-			delete refcount;
+		if(!m_mem) {
+			return;
+		}
+		assert(m_mem->refcount > 0);
+		--m_mem->refcount;
+		if (m_mem->refcount == 0) {
+			free(m_mem);
+			m_mem = nullptr;
+			m_size = 0;
 		}
 	}
-	T *data;
-	unsigned int m_size;
-	unsigned int *refcount;
+
+	struct Mem {
+		u32 refcount;
+		T data[];
+	} *m_mem;
+
+	u32 m_size;
 };
 
 // This class is not thread-safe!
